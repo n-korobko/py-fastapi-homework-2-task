@@ -1,173 +1,243 @@
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+import datetime
+from typing import Optional, Type
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import select, func
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import joinedload
 
-from database.session_sqlite import get_sqlite_db as get_db
+from database import get_db
 from database.models import (
     MovieModel,
     CountryModel,
     GenreModel,
     ActorModel,
     LanguageModel,
+    MovieStatusEnum,
 )
+
 from schemas.movies import (
     MovieListResponseSchema,
-    MovieCreateSchema,
     MovieDetailResponseSchema,
-    MovieUpdateSchema,
+    MovieCreateRequestSchema,
+    MovieUpdateRequestSchema,
+    MessageResponseSchema,
 )
 
-router = APIRouter()
+router = APIRouter(prefix="/movies")
 
 
-async def get_or_create(db: AsyncSession, model, field: str, value: str):
-    result = await db.execute(select(model).where(getattr(model, field) == value))
-    instance = result.scalar_one_or_none()
-    if instance is None:
-        instance = model(**{field: value})
-        db.add(instance)
-        await db.flush()
-    return instance
+def _is_valid_status(value: str) -> bool:
+    return value in {e.value for e in MovieStatusEnum}
 
 
-@router.get("/movies/", response_model=MovieListResponseSchema)
+def _validate_create_payload(payload: MovieCreateRequestSchema) -> Optional[str]:
+    today = datetime.date.today()
+
+    if payload.date > today + datetime.timedelta(days=365):
+        return "Invalid input data."
+
+    if not _is_valid_status(payload.status):
+        return "Invalid input data."
+
+    return None
+
+
+def _validate_update_payload(payload: MovieUpdateRequestSchema) -> Optional[str]:
+    if all(
+        getattr(payload, field) is None
+        for field in ("name", "date", "score", "overview", "status", "budget", "revenue")
+    ):
+        return "Invalid input data."
+
+    if payload.date:
+        today = datetime.date.today()
+        if payload.date > today + datetime.timedelta(days=365):
+            return "Invalid input data."
+
+    if payload.status and not _is_valid_status(payload.status):
+        return "Invalid input data."
+
+    return None
+
+
+async def _get_or_create_by_unique_str(
+    db: AsyncSession,
+    model: Type,
+    field_name: str,
+    value: str,
+):
+    stmt = select(model).where(getattr(model, field_name) == value)
+    result = await db.execute(stmt)
+    obj = result.scalars().first()
+    if obj:
+        return obj
+
+    obj = model(**{field_name: value})
+    db.add(obj)
+    await db.flush()
+    return obj
+
+
+async def _get_or_create_country(db: AsyncSession, code: str) -> CountryModel:
+    stmt = select(CountryModel).where(CountryModel.code == code)
+    result = await db.execute(stmt)
+    country = result.scalars().first()
+    if country:
+        return country
+
+    country = CountryModel(code=code, name=None)
+    db.add(country)
+    await db.flush()
+    return country
+
+
+@router.get("/", response_model=MovieListResponseSchema)
 async def get_movies(
-    db: AsyncSession = Depends(get_db),
     page: int = Query(1, ge=1),
     per_page: int = Query(10, ge=1, le=20),
+    db: AsyncSession = Depends(get_db),
 ):
-    total_items = await db.scalar(select(func.count(MovieModel.id)))
+    total_items = await db.scalar(select(func.count(MovieModel.id))) or 0
     if total_items == 0:
-        raise HTTPException(status_code=404, detail="No movies found.")
-
-    total_pages = (total_items + per_page - 1) // per_page
-    if page > total_pages:
         raise HTTPException(status_code=404, detail="No movies found.")
 
     offset = (page - 1) * per_page
 
-    result = await db.execute(
+    stmt = (
         select(MovieModel)
         .order_by(MovieModel.id.desc())
         .offset(offset)
         .limit(per_page)
     )
+    result = await db.execute(stmt)
     movies = result.scalars().all()
 
-    base = "/theater/movies/"
-    prev_page = f"{base}?page={page - 1}&per_page={per_page}" if page > 1 else None
-    next_page = f"{base}?page={page + 1}&per_page={per_page}" if page < total_pages else None
+    if not movies:
+        raise HTTPException(status_code=404, detail="No movies found.")
+
+    total_pages = (total_items + per_page - 1) // per_page
+    base_path = "/theater/movies/"
 
     return {
         "movies": movies,
-        "prev_page": prev_page,
-        "next_page": next_page,
+        "prev_page": f"{base_path}?page={page - 1}&per_page={per_page}" if page > 1 else None,
+        "next_page": f"{base_path}?page={page + 1}&per_page={per_page}" if page < total_pages else None,
         "total_pages": total_pages,
         "total_items": total_items,
     }
 
 
-@router.get("/movies/{movie_id}/", response_model=MovieDetailResponseSchema)
-async def get_movie(movie_id: int, db: AsyncSession = Depends(get_db)):
-    result = await db.execute(
+@router.get("/{movie_id}/", response_model=MovieDetailResponseSchema)
+async def get_movie_by_id(movie_id: int, db: AsyncSession = Depends(get_db)):
+    stmt = (
         select(MovieModel)
+        .where(MovieModel.id == movie_id)
         .options(
             joinedload(MovieModel.country),
             joinedload(MovieModel.genres),
             joinedload(MovieModel.actors),
             joinedload(MovieModel.languages),
         )
-        .where(MovieModel.id == movie_id)
     )
-    movie = result.unique().scalar_one_or_none()
+    result = await db.execute(stmt)
+    movie = result.scalars().first()
+
     if not movie:
         raise HTTPException(status_code=404, detail="Movie with the given ID was not found.")
+
     return movie
 
 
-@router.post("/movies/", response_model=MovieDetailResponseSchema, status_code=201)
-async def create_movie(movie: MovieCreateSchema, db: AsyncSession = Depends(get_db)):
-    result = await db.execute(
-        select(MovieModel).where(
-            MovieModel.name == movie.name,
-            MovieModel.date == movie.date,
+@router.post("/", status_code=201, response_model=MovieDetailResponseSchema)
+async def create_movie(payload: MovieCreateRequestSchema, db: AsyncSession = Depends(get_db)):
+    err = _validate_create_payload(payload)
+    if err:
+        raise HTTPException(status_code=400, detail=err)
+
+    try:
+        country = await _get_or_create_country(db, payload.country)
+
+        genres = [
+            await _get_or_create_by_unique_str(db, GenreModel, "name", g)
+            for g in payload.genres
+        ]
+        actors = [
+            await _get_or_create_by_unique_str(db, ActorModel, "name", a)
+            for a in payload.actors
+        ]
+        languages = [
+            await _get_or_create_by_unique_str(db, LanguageModel, "name", l)
+            for l in payload.languages
+        ]
+
+        movie = MovieModel(
+            name=payload.name,
+            date=payload.date,
+            score=payload.score,
+            overview=payload.overview,
+            status=MovieStatusEnum(payload.status),
+            budget=payload.budget,
+            revenue=payload.revenue,
+            country=country,
+            genres=genres,
+            actors=actors,
+            languages=languages,
         )
-    )
-    if result.scalar_one_or_none():
+
+        db.add(movie)
+        await db.commit()
+
+    except IntegrityError:
+        await db.rollback()
         raise HTTPException(
             status_code=409,
-            detail=f"A movie with the name '{movie.name}' and release date '{movie.date}' already exists.",
+            detail=f"A movie with the name '{payload.name}' and release date '{payload.date}' already exists.",
         )
 
-    country = await get_or_create(db, CountryModel, "code", movie.country)
-
-    new_movie = MovieModel(
-        **movie.model_dump(exclude={"genres", "actors", "languages", "country"}),
-        country=country,
-    )
-    db.add(new_movie)
-    await db.flush()
-
-    for name in movie.genres:
-        new_movie.genres.append(await get_or_create(db, GenreModel, "name", name))
-    for name in movie.actors:
-        new_movie.actors.append(await get_or_create(db, ActorModel, "name", name))
-    for name in movie.languages:
-        new_movie.languages.append(await get_or_create(db, LanguageModel, "name", name))
-
-    await db.commit()
-
-    result = await db.execute(
+    stmt = (
         select(MovieModel)
+        .where(MovieModel.id == movie.id)
         .options(
             joinedload(MovieModel.country),
             joinedload(MovieModel.genres),
             joinedload(MovieModel.actors),
             joinedload(MovieModel.languages),
         )
-        .where(MovieModel.id == new_movie.id)
     )
+    result = await db.execute(stmt)
+    return result.scalars().first()
 
-    return result.unique().scalar_one()
 
-
-@router.delete("/movies/{movie_id}/", status_code=204)
+@router.delete("/{movie_id}/", status_code=204)
 async def delete_movie(movie_id: int, db: AsyncSession = Depends(get_db)):
     movie = await db.get(MovieModel, movie_id)
     if not movie:
         raise HTTPException(status_code=404, detail="Movie with the given ID was not found.")
+
     await db.delete(movie)
     await db.commit()
+    return None
 
 
-@router.patch(
-    "/movies/{movie_id}/",
-    response_model=MovieDetailResponseSchema,
-)
-async def update_movie(movie_id: int, movie: MovieUpdateSchema, db: AsyncSession = Depends(get_db)):
-    db_movie = await db.get(MovieModel, movie_id)
-    if not db_movie:
+@router.patch("/{movie_id}/", response_model=MessageResponseSchema)
+async def update_movie(
+    movie_id: int,
+    payload: MovieUpdateRequestSchema,
+    db: AsyncSession = Depends(get_db),
+):
+    movie = await db.get(MovieModel, movie_id)
+    if not movie:
         raise HTTPException(status_code=404, detail="Movie with the given ID was not found.")
 
-    data = movie.model_dump(exclude_unset=True)
-    if not data:
-        raise HTTPException(status_code=400, detail="Invalid input data.")
+    err = _validate_update_payload(payload)
+    if err:
+        raise HTTPException(status_code=400, detail=err)
 
-    for k, v in data.items():
-        setattr(db_movie, k, v)
+    for field, value in payload.model_dump(exclude_none=True).items():
+        if field == "status":
+            value = MovieStatusEnum(value)
+        setattr(movie, field, value)
 
     await db.commit()
-
-    result = await db.execute(
-        select(MovieModel)
-        .options(
-            joinedload(MovieModel.country),
-            joinedload(MovieModel.genres),
-            joinedload(MovieModel.actors),
-            joinedload(MovieModel.languages),
-        )
-        .where(MovieModel.id == db_movie.id)
-    )
-
-    return result.unique().scalar_one()
+    return {"detail": "Movie updated successfully."}

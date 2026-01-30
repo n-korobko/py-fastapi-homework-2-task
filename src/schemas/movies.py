@@ -1,95 +1,97 @@
-from datetime import date, timedelta
-from typing import Optional, List
-from pydantic import BaseModel, ConfigDict, Field, field_validator
-from database.models import MovieStatusEnum
+from __future__ import annotations
+import datetime
+from typing import List, Optional
+from pydantic import BaseModel, Field
+
+try:
+    from pydantic import ConfigDict
+except Exception:
+    ConfigDict = None
 
 
-class MovieBase(BaseModel):
-    name: str = Field(max_length=255)
-    date: date
-    score: float = Field(ge=0, le=100)
-    overview: Optional[str] = None
-    status: MovieStatusEnum
-    budget: float = Field(ge=0)
-    revenue: float = Field(ge=0)
-
-    @field_validator("date")
-    @classmethod
-    def check_future_date(cls, v: date) -> date:
-        if v > date.today() + timedelta(days=365):
-            raise ValueError("The date must not be more than one year in the future.")
-        return v
+class _BaseSchema(BaseModel):
+    if ConfigDict:
+        model_config = ConfigDict(from_attributes=True)
+    else:
+        class Config:
+            orm_mode = True
 
 
-class MovieShortResponse(BaseModel):
+class GenreSchema(_BaseSchema):
     id: int
     name: str
-    date: date
+
+
+class ActorSchema(_BaseSchema):
+    id: int
+    name: str
+
+
+class LanguageSchema(_BaseSchema):
+    id: int
+    name: str
+
+
+class CountrySchema(_BaseSchema):
+    id: int
+    code: str
+    name: Optional[str] = None
+
+
+class MovieListItemSchema(_BaseSchema):
+    id: int
+    name: str
+    date: datetime.date
     score: float
-    overview: Optional[str] = None
-
-    model_config = ConfigDict(from_attributes=True)
+    overview: str
 
 
-class MovieListResponseSchema(BaseModel):
-    movies: List[MovieShortResponse]
+class MovieListResponseSchema(_BaseSchema):
+    movies: List[MovieListItemSchema]
     prev_page: Optional[str]
     next_page: Optional[str]
     total_pages: int
     total_items: int
 
-    model_config = ConfigDict(from_attributes=True)
+
+class MovieDetailResponseSchema(_BaseSchema):
+    id: int
+    name: str
+    date: datetime.date
+    score: float
+    overview: str
+    status: str
+    budget: float
+    revenue: float
+    country: CountrySchema
+    genres: List[GenreSchema]
+    actors: List[ActorSchema]
+    languages: List[LanguageSchema]
 
 
-class MovieCreateSchema(MovieBase):
-    country: str = Field(max_length=3)
+class MovieCreateRequestSchema(_BaseSchema):
+    name: str = Field(max_length=255)
+    date: datetime.date
+    score: float = Field(ge=0, le=100)
+    overview: str
+    status: str
+    budget: float = Field(ge=0)
+    revenue: float = Field(ge=0)
+    country: str
     genres: List[str]
     actors: List[str]
     languages: List[str]
 
 
-class MovieCountrySchema(BaseModel):
-    id: int
-    code: str
+class MovieUpdateRequestSchema(_BaseSchema):
     name: Optional[str] = None
-
-    model_config = ConfigDict(from_attributes=True)
-
-
-class AdditionalInfoSchema(BaseModel):
-    id: int
-    name: str
-
-    model_config = ConfigDict(from_attributes=True)
+    date: Optional[datetime.date] = None
+    score: Optional[float] = None
+    overview: Optional[str] = None
+    status: Optional[str] = None
+    budget: Optional[float] = None
+    revenue: Optional[float] = None
 
 
-class MovieGenresSchema(AdditionalInfoSchema):
-    pass
-
-
-class MovieActorsSchema(AdditionalInfoSchema):
-    pass
-
-
-class MovieLanguagesSchema(AdditionalInfoSchema):
-    pass
-
-
-class MovieDetailResponseSchema(MovieBase):
-    id: int
-    country: MovieCountrySchema
-    genres: List[MovieGenresSchema]
-    actors: List[MovieActorsSchema]
-    languages: List[MovieLanguagesSchema]
-
-    model_config = ConfigDict(from_attributes=True)
-
-
-class MovieUpdateSchema(BaseModel):
-    name: Optional[str]
-    date: Optional[date]
-    score: Optional[float]
-    overview: Optional[str]
-    status: Optional[MovieStatusEnum]
-    budget: Optional[float]
-    revenue: Optional[float]
+class MessageResponseSchema(_BaseSchema):
+    detail: str
