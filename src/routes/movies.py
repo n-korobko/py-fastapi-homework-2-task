@@ -167,8 +167,8 @@ async def create_movie(payload: MovieCreateRequestSchema, db: AsyncSession = Dep
             for a in payload.actors
         ]
         languages = [
-            await _get_or_create_by_unique_str(db, LanguageModel, "name", l)
-            for l in payload.languages
+            await _get_or_create_by_unique_str(db, LanguageModel, "name", lang)
+            for lang in payload.languages
         ]
 
         movie = MovieModel(
