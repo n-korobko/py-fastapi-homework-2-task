@@ -1,13 +1,10 @@
 from fastapi import FastAPI
+from routes.movies import router as movie_router
 
-from routes import movie_router
+app = FastAPI()
 
-
-app = FastAPI(
-    title="Movies homework",
-    description="Description of project"
+app.include_router(
+    movie_router,
+    prefix="/api/v1/theater",
+    tags=["theater"],
 )
-
-api_version_prefix = "/api/v1"
-
-app.include_router(movie_router, prefix=f"{api_version_prefix}/theater", tags=["theater"])
