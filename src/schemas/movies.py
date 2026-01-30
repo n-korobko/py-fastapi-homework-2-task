@@ -84,13 +84,13 @@ class MovieCreateRequestSchema(_BaseSchema):
 
 
 class MovieUpdateRequestSchema(_BaseSchema):
-    name: Optional[str] = None
+    name: Optional[str] = Field(None, max_length=255)
     date: Optional[datetime.date] = None
-    score: Optional[float] = None
+    score: Optional[float] = Field(None, ge=0, le=100)
     overview: Optional[str] = None
     status: Optional[str] = None
-    budget: Optional[float] = None
-    revenue: Optional[float] = None
+    budget: Optional[float] = Field(None, ge=0)
+    revenue: Optional[float] = Field(None, ge=0)
 
 
 class MessageResponseSchema(_BaseSchema):

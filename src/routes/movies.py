@@ -45,17 +45,32 @@ def _validate_create_payload(payload: MovieCreateRequestSchema) -> Optional[str]
 
 def _validate_update_payload(payload: MovieUpdateRequestSchema) -> Optional[str]:
     if all(
-        getattr(payload, field) is None
-        for field in ("name", "date", "score", "overview", "status", "budget", "revenue")
+        getattr(payload, f) is None
+        for f in ("name", "date", "score", "overview", "status", "budget", "revenue")
     ):
         return "Invalid input data."
 
-    if payload.date:
+    if payload.name is not None and len(payload.name) == 0:
+        return "Invalid input data."
+
+    if payload.date is not None:
         today = datetime.date.today()
         if payload.date > today + datetime.timedelta(days=365):
             return "Invalid input data."
 
-    if payload.status and not _is_valid_status(payload.status):
+    if payload.score is not None and not (0 <= payload.score <= 100):
+        return "Invalid input data."
+
+    if payload.budget is not None and payload.budget < 0:
+        return "Invalid input data."
+
+    if payload.revenue is not None and payload.revenue < 0:
+        return "Invalid input data."
+
+    if payload.overview is not None and len(payload.overview) == 0:
+        return "Invalid input data."
+
+    if payload.status is not None and not _is_valid_status(payload.status):
         return "Invalid input data."
 
     return None
